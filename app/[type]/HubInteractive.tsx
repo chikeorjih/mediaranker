@@ -8,37 +8,42 @@ import type { MediaItem } from "@/db";
 
 interface HubInteractiveProps {
   type: "movie" | "tv";
-  initialItems: MediaItem[];
 }
 
-export default function HubInteractive({ type, initialItems }: HubInteractiveProps) {
+export default function HubInteractive({ type }: HubInteractiveProps) {
   const [showSearch, setShowSearch] = useState(false);
-  const [items, setItems] = useState<MediaItem[]>(initialItems);
+  const [items, setItems] = useState<MediaItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const label = type === "movie" ? "Movies" : "TV Shows";
 
-  // Sync local state whenever the server re-renders with fresher data
-  // (e.g. after returning from the compare page)
-  useEffect(() => {
-    setItems(initialItems);
-  }, [initialItems]);
-
-  const refreshRankings = useCallback(async () => {
-    setRefreshing(true);
+  const fetchRankings = useCallback(async (isInitial = false) => {
+    if (isInitial) setLoading(true); else setRefreshing(true);
     try {
       const res = await fetch(`/api/rankings?type=${type}`);
       if (res.ok) setItems(await res.json());
     } finally {
-      setRefreshing(false);
+      if (isInitial) setLoading(false); else setRefreshing(false);
     }
   }, [type]);
 
-  // Called by SearchModal each time an item is successfully added
+  // Always fetch fresh from Supabase on mount — no router cache involved
+  useEffect(() => {
+    fetchRankings(true);
+  }, [fetchRankings]);
+
   const handleAdded = useCallback(() => {
-    refreshRankings();
-    // Modal stays open — user can keep adding more items
-  }, [refreshRankings]);
+    fetchRankings(false);
+  }, [fetchRankings]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <>
@@ -77,12 +82,11 @@ export default function HubInteractive({ type, initialItems }: HubInteractivePro
         </p>
       )}
 
-      {/* Rankings list — fades slightly while refreshing */}
+      {/* Rankings list — fades slightly while refreshing after add/delete */}
       <div className={`transition-opacity duration-200 ${refreshing ? "opacity-50" : "opacity-100"}`}>
-        <RankingsList items={items} type={type} onRefresh={refreshRankings} />
+        <RankingsList items={items} type={type} onRefresh={() => fetchRankings(false)} />
       </div>
 
-      {/* Search / add modal */}
       {showSearch && (
         <SearchModal
           type={type}
