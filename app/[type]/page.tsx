@@ -10,14 +10,14 @@ interface PageProps {
   params: { type: string };
 }
 
-export default function HubPage({ params }: PageProps) {
+export default async function HubPage({ params }: PageProps) {
   const { type } = params;
 
   if (type !== "movie" && type !== "tv") {
     redirect("/");
   }
 
-  const items = getRankings(type);
+  const items = await getRankings(type);
   const label = type === "movie" ? "Movies" : "TV Shows";
   const icon = type === "movie" ? "🎥" : "📺";
 

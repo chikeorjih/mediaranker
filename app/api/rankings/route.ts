@@ -10,6 +10,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid type" }, { status: 400 });
   }
 
-  const items = getRankings(type);
-  return NextResponse.json(items);
+  try {
+    const items = await getRankings(type);
+    return NextResponse.json(items);
+  } catch (err) {
+    console.error("Rankings error:", err);
+    return NextResponse.json({ error: "Failed to load rankings" }, { status: 500 });
+  }
 }

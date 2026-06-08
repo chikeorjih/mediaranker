@@ -12,19 +12,24 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid type" }, { status: 400 });
   }
 
-  const pair = getTwoForComparison(type);
+  try {
+    const pair = await getTwoForComparison(type);
 
-  if (!pair) {
-    return NextResponse.json(
-      {
-        error: "not_enough_items",
-        message: `Add at least 2 ${type === "movie" ? "movies" : "TV shows"} to start comparing.`,
-      },
-      { status: 400 }
-    );
+    if (!pair) {
+      return NextResponse.json(
+        {
+          error: "not_enough_items",
+          message: `Add at least 2 ${type === "movie" ? "movies" : "TV shows"} to start comparing.`,
+        },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json(pair);
+  } catch (err) {
+    console.error("Compare GET error:", err);
+    return NextResponse.json({ error: "Failed to load pair" }, { status: 500 });
   }
-
-  return NextResponse.json(pair);
 }
 
 // POST /api/compare  { winner_id, loser_id }
@@ -46,19 +51,33 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const winner = getMediaById(winnerId);
-  const loser = getMediaById(loserId);
+  try {
+    const [winner, loser] = await Promise.all([
+      getMediaById(winnerId),
+      getMediaById(loserId),
+    ]);
 
-  if (!winner || !loser) {
-    return NextResponse.json({ error: "Item not found" }, { status: 404 });
+    if (!winner || !loser) {
+      return NextResponse.json({ error: "Item not found" }, { status: 404 });
+    }
+
+    const { newWinnerElo, newLoserElo } = calculateEloUpdate(winner, loser);
+    await updateEloRatings(
+      winnerId,
+      loserId,
+      newWinnerElo,
+      newLoserElo,
+      winner.comparison_count,
+      loser.comparison_count
+    );
+
+    return NextResponse.json({
+      ok: true,
+      winner: { id: winnerId, new_elo: Math.round(newWinnerElo) },
+      loser: { id: loserId, new_elo: Math.round(newLoserElo) },
+    });
+  } catch (err) {
+    console.error("Compare POST error:", err);
+    return NextResponse.json({ error: "Failed to submit comparison" }, { status: 500 });
   }
-
-  const { newWinnerElo, newLoserElo } = calculateEloUpdate(winner, loser);
-  updateEloRatings(winnerId, loserId, newWinnerElo, newLoserElo);
-
-  return NextResponse.json({
-    ok: true,
-    winner: { id: winnerId, new_elo: Math.round(newWinnerElo) },
-    loser: { id: loserId, new_elo: Math.round(newLoserElo) },
-  });
 }

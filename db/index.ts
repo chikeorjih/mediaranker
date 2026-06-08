@@ -1,49 +1,30 @@
-import path from "path";
-import { DatabaseSync } from "node:sqlite";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-const DB_PATH = path.join(process.cwd(), "mediaranker.db");
+// ── Singleton ────────────────────────────────────────────────────────────────
+// Survives Next.js hot-reload without creating multiple clients.
 
-// Singleton guard: survives Next.js hot-reload without leaking connections
 declare global {
   // eslint-disable-next-line no-var
-  var _db: DatabaseSync | undefined;
+  var _supabase: SupabaseClient | undefined;
 }
 
-function openDb(): DatabaseSync {
-  const db = new DatabaseSync(DB_PATH);
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA foreign_keys = ON");
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS media_items (
-      id               INTEGER PRIMARY KEY AUTOINCREMENT,
-      tmdb_id          INTEGER NOT NULL,
-      type             TEXT NOT NULL CHECK(type IN ('movie', 'tv')),
-      title            TEXT NOT NULL,
-      poster_path      TEXT,
-      overview         TEXT,
-      release_year     INTEGER,
-      elo_rating       REAL NOT NULL DEFAULT 1000,
-      comparison_count INTEGER NOT NULL DEFAULT 0,
-      created_at       TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_tmdb_type
-      ON media_items(tmdb_id, type);
-
-    CREATE TABLE IF NOT EXISTS comparisons (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      winner_id  INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
-      loser_id   INTEGER NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `);
-
-  return db;
+function createSupabaseClient(): SupabaseClient {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set");
+  }
+  return createClient(url, key, {
+    auth: {
+      // Server-side only — disable browser session persistence
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
 }
 
-export const db: DatabaseSync =
-  global._db ?? (global._db = openDb());
+export const supabase: SupabaseClient =
+  global._supabase ?? (global._supabase = createSupabaseClient());
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -69,81 +50,111 @@ export interface InsertMediaData {
   release_year?: number | null;
 }
 
-// ── Serialization helper ─────────────────────────────────────────────────────
-// node:sqlite returns rows with null prototypes, which Next.js cannot pass
-// from Server Components to Client Components. Convert every row to a plain
-// object so it is fully serializable.
-function plain<T>(row: unknown): T {
-  return JSON.parse(JSON.stringify(row)) as T;
-}
-
 // ── Helper queries ───────────────────────────────────────────────────────────
 
-export function getMediaById(id: number): MediaItem | undefined {
-  const stmt = db.prepare("SELECT * FROM media_items WHERE id = ?");
-  const row = stmt.get(id);
-  return row ? plain<MediaItem>(row) : undefined;
+export async function getMediaById(id: number): Promise<MediaItem | undefined> {
+  const { data, error } = await supabase
+    .from("media_items")
+    .select("*")
+    .eq("id", id)
+    .single();
+
+  if (error) {
+    // PGRST116 = no rows found
+    if (error.code === "PGRST116") return undefined;
+    throw error;
+  }
+  return data as MediaItem;
 }
 
-export function getAllByType(type: string): MediaItem[] {
-  const stmt = db.prepare(
-    "SELECT * FROM media_items WHERE type = ? ORDER BY elo_rating DESC"
-  );
-  return (stmt.all(type) as unknown[]).map((r) => plain<MediaItem>(r));
+export async function getAllByType(type: string): Promise<MediaItem[]> {
+  const { data, error } = await supabase
+    .from("media_items")
+    .select("*")
+    .eq("type", type)
+    .order("elo_rating", { ascending: false });
+
+  if (error) throw error;
+  return (data ?? []) as MediaItem[];
 }
 
-export function insertMedia(data: InsertMediaData): MediaItem {
-  const stmt = db.prepare(`
-    INSERT INTO media_items (tmdb_id, type, title, poster_path, overview, release_year)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  const result = stmt.run(
-    data.tmdb_id,
-    data.type,
-    data.title,
-    data.poster_path ?? null,
-    data.overview ?? null,
-    data.release_year ?? null
-  );
-  return getMediaById(Number(result.lastInsertRowid))!;
+export async function insertMedia(data: InsertMediaData): Promise<MediaItem> {
+  const { data: row, error } = await supabase
+    .from("media_items")
+    .insert({
+      tmdb_id: data.tmdb_id,
+      type: data.type,
+      title: data.title,
+      poster_path: data.poster_path ?? null,
+      overview: data.overview ?? null,
+      release_year: data.release_year ?? null,
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return row as MediaItem;
 }
 
-export function deleteMedia(id: number): void {
-  db.prepare("DELETE FROM media_items WHERE id = ?").run(id);
+export async function deleteMedia(id: number): Promise<void> {
+  const { error } = await supabase
+    .from("media_items")
+    .delete()
+    .eq("id", id);
+
+  if (error) throw error;
 }
 
-export function getRankings(type: string): MediaItem[] {
+export async function getRankings(type: string): Promise<MediaItem[]> {
   return getAllByType(type);
 }
 
-export function updateEloRatings(
+export async function updateEloRatings(
   winnerId: number,
   loserId: number,
   newWinnerElo: number,
-  newLoserElo: number
-): void {
-  db.prepare(
-    "UPDATE media_items SET elo_rating = ?, comparison_count = comparison_count + 1 WHERE id = ?"
-  ).run(newWinnerElo, winnerId);
-  db.prepare(
-    "UPDATE media_items SET elo_rating = ?, comparison_count = comparison_count + 1 WHERE id = ?"
-  ).run(newLoserElo, loserId);
-  db.prepare(
-    "INSERT INTO comparisons (winner_id, loser_id) VALUES (?, ?)"
-  ).run(winnerId, loserId);
+  newLoserElo: number,
+  winnerCurrentCount: number,
+  loserCurrentCount: number
+): Promise<void> {
+  const [winnerResult, loserResult] = await Promise.all([
+    supabase
+      .from("media_items")
+      .update({
+        elo_rating: newWinnerElo,
+        comparison_count: winnerCurrentCount + 1,
+      })
+      .eq("id", winnerId),
+    supabase
+      .from("media_items")
+      .update({
+        elo_rating: newLoserElo,
+        comparison_count: loserCurrentCount + 1,
+      })
+      .eq("id", loserId),
+  ]);
+
+  if (winnerResult.error) throw winnerResult.error;
+  if (loserResult.error) throw loserResult.error;
+
+  const { error: compError } = await supabase
+    .from("comparisons")
+    .insert({ winner_id: winnerId, loser_id: loserId });
+
+  if (compError) throw compError;
 }
 
 /**
  * Returns two distinct items for comparison, weighted toward items with
  * fewer comparisons so that new additions surface quickly.
  */
-export function getTwoForComparison(
+export async function getTwoForComparison(
   type: string
-): [MediaItem, MediaItem] | null {
-  const items = getAllByType(type);
+): Promise<[MediaItem, MediaItem] | null> {
+  const items = await getAllByType(type);
   if (items.length < 2) return null;
 
-  // Build cumulative weight array — weight = 1 / (comparison_count + 1)
+  // Weight = 1 / (comparison_count + 1) — surfaces newer items more often
   const weights = items.map((item) => 1 / (item.comparison_count + 1));
   const total = weights.reduce((a, b) => a + b, 0);
 
@@ -154,7 +165,6 @@ export function getTwoForComparison(
       r -= weights[i];
       if (r <= 0) return i;
     }
-    // Fallback: return last non-excluded index
     return items.findIndex((_, i) => i !== exclude);
   }
 

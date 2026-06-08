@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const item = insertMedia({
+    const item = await insertMedia({
       tmdb_id: Number(tmdb_id),
       type: type as "movie" | "tv",
       title: String(title),
@@ -43,11 +43,18 @@ export async function POST(request: NextRequest) {
     });
     return NextResponse.json(item, { status: 201 });
   } catch (err: unknown) {
-    // SQLite unique constraint violation
+    // PostgreSQL unique constraint violation
     if (
       err instanceof Error &&
-      err.message.includes("UNIQUE constraint failed")
+      (err as unknown as { code?: string }).code === "23505"
     ) {
+      return NextResponse.json(
+        { error: "Already in your collection" },
+        { status: 409 }
+      );
+    }
+    // Supabase wraps Postgres errors — check the message as fallback
+    if (err instanceof Error && err.message.includes("23505")) {
       return NextResponse.json(
         { error: "Already in your collection" },
         { status: 409 }

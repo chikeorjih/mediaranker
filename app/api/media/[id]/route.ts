@@ -12,11 +12,16 @@ export async function DELETE(
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
 
-  const item = getMediaById(id);
-  if (!item) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  try {
+    const item = await getMediaById(id);
+    if (!item) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
 
-  deleteMedia(id);
-  return new NextResponse(null, { status: 204 });
+    await deleteMedia(id);
+    return new NextResponse(null, { status: 204 });
+  } catch (err) {
+    console.error("Delete error:", err);
+    return NextResponse.json({ error: "Failed to delete item" }, { status: 500 });
+  }
 }
