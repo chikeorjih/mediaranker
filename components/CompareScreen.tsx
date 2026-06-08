@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import type { MediaItem } from "@/db";
 import MediaCard from "./MediaCard";
 import Link from "next/link";
@@ -10,6 +11,7 @@ interface CompareScreenProps {
 }
 
 export default function CompareScreen({ type }: CompareScreenProps) {
+  const router = useRouter();
   const [pair, setPair] = useState<[MediaItem, MediaItem] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +64,8 @@ export default function CompareScreen({ type }: CompareScreenProps) {
         body: JSON.stringify({ winner_id: winner.id, loser_id: loser.id }),
       });
       setStreak((s) => s + 1);
+      // Invalidate the router cache so the rankings page shows fresh Elo scores
+      router.refresh();
       await fetchPair();
     } catch {
       setError("Failed to submit. Please try again.");

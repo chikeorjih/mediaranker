@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import SearchModal from "@/components/SearchModal";
 import RankingsList from "@/components/RankingsList";
@@ -17,6 +17,12 @@ export default function HubInteractive({ type, initialItems }: HubInteractivePro
   const [refreshing, setRefreshing] = useState(false);
 
   const label = type === "movie" ? "Movies" : "TV Shows";
+
+  // Sync local state whenever the server re-renders with fresher data
+  // (e.g. after returning from the compare page)
+  useEffect(() => {
+    setItems(initialItems);
+  }, [initialItems]);
 
   const refreshRankings = useCallback(async () => {
     setRefreshing(true);
