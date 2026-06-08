@@ -11,40 +11,39 @@ interface SearchModalProps {
   onAdded: () => void;
 }
 
+type AddState = "idle" | "adding" | "added" | "duplicate" | "error";
+
 export default function SearchModal({ type, onClose, onAdded }: SearchModalProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<TmdbSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
-  const [addedIds, setAddedIds] = useState<Set<number>>(new Set());
-  const [duplicateIds, setDuplicateIds] = useState<Set<number>>(new Set());
-  const [error, setError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  // Per-item add state
+  const [addStates, setAddStates] = useState<Map<number, AddState>>(new Map());
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Focus input on open
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+  useEffect(() => { inputRef.current?.focus(); }, []);
 
-  // Dismiss on Escape
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
 
+  const setItemState = (id: number, state: AddState) =>
+    setAddStates((prev) => new Map(prev).set(id, state));
+
   const search = useCallback(async (q: string) => {
     if (!q.trim()) { setResults([]); return; }
     setLoading(true);
-    setError(null);
+    setSearchError(null);
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&type=${type}`);
       if (!res.ok) throw new Error("Search failed");
       setResults(await res.json());
     } catch {
-      setError("Search failed. Is your TMDB API key set?");
+      setSearchError("Search failed. Is your TMDB API key set?");
     } finally {
       setLoading(false);
     }
@@ -57,6 +56,12 @@ export default function SearchModal({ type, onClose, onAdded }: SearchModalProps
   };
 
   const handleAdd = async (result: TmdbSearchResult) => {
+    const current = addStates.get(result.id) ?? "idle";
+    if (current !== "idle" && current !== "error") return; // already handled
+
+    // Immediately show loading state — gives instant feedback
+    setItemState(result.id, "adding");
+
     try {
       const res = await fetch("/api/media", {
         method: "POST",
@@ -72,15 +77,15 @@ export default function SearchModal({ type, onClose, onAdded }: SearchModalProps
       });
 
       if (res.status === 409) {
-        setDuplicateIds((prev) => new Set(Array.from(prev).concat(result.id)));
+        setItemState(result.id, "duplicate");
         return;
       }
       if (!res.ok) throw new Error("Add failed");
 
-      setAddedIds((prev) => new Set(Array.from(prev).concat(result.id)));
-      onAdded();
+      setItemState(result.id, "added");
+      onAdded(); // triggers rankings refresh in parent — no page reload
     } catch {
-      alert("Failed to add item. Please try again.");
+      setItemState(result.id, "error");
     }
   };
 
@@ -117,19 +122,19 @@ export default function SearchModal({ type, onClose, onAdded }: SearchModalProps
 
         {/* Results */}
         <div className="overflow-y-auto flex-1 px-4 pb-4 space-y-2">
-          {error && (
-            <p className="text-red-400 text-sm text-center py-4">{error}</p>
+          {searchError && (
+            <p className="text-red-400 text-sm text-center py-4">{searchError}</p>
           )}
           {loading && (
             <p className="text-gray-400 text-sm text-center py-4">Searching…</p>
           )}
-          {!loading && results.length === 0 && query.trim() && !error && (
+          {!loading && results.length === 0 && query.trim() && !searchError && (
             <p className="text-gray-500 text-sm text-center py-4">No results found.</p>
           )}
+
           {results.map((result) => {
             const imgSrc = posterUrl(result.poster_path, "w185");
-            const isAdded = addedIds.has(result.id);
-            const isDuplicate = duplicateIds.has(result.id);
+            const addState = addStates.get(result.id) ?? "idle";
 
             return (
               <div
@@ -139,13 +144,7 @@ export default function SearchModal({ type, onClose, onAdded }: SearchModalProps
                 {/* Thumbnail */}
                 {imgSrc ? (
                   <div className="relative flex-shrink-0 w-10 h-14 rounded overflow-hidden">
-                    <Image
-                      src={imgSrc}
-                      alt={result.title}
-                      fill
-                      className="object-cover"
-                      sizes="40px"
-                    />
+                    <Image src={imgSrc} alt={result.title} fill className="object-cover" sizes="40px" />
                   </div>
                 ) : (
                   <div className="flex-shrink-0 w-10 h-14 bg-gray-700 rounded" />
@@ -153,35 +152,61 @@ export default function SearchModal({ type, onClose, onAdded }: SearchModalProps
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-white text-sm font-medium truncate">
-                    {result.title}
-                  </p>
+                  <p className="text-white text-sm font-medium truncate">{result.title}</p>
                   {result.release_year && (
                     <p className="text-gray-400 text-xs">{result.release_year}</p>
                   )}
                 </div>
 
-                {/* Add button */}
-                <button
-                  onClick={() => handleAdd(result)}
-                  disabled={isAdded || isDuplicate}
-                  className={`
-                    flex-shrink-0 text-xs font-medium px-3 py-1.5 rounded-full transition-colors
-                    ${isAdded
-                      ? "bg-green-700 text-white cursor-default"
-                      : isDuplicate
-                      ? "bg-gray-600 text-gray-400 cursor-default"
-                      : "bg-indigo-600 hover:bg-indigo-500 text-white"
-                    }
-                  `}
-                >
-                  {isAdded ? "Added ✓" : isDuplicate ? "Already added" : "Add"}
-                </button>
+                {/* Add button — state-driven */}
+                <AddButton state={addState} onClick={() => handleAdd(result)} />
               </div>
             );
           })}
         </div>
       </div>
     </div>
+  );
+}
+
+function AddButton({ state, onClick }: { state: AddState; onClick: () => void }) {
+  const base = "flex-shrink-0 text-xs font-medium px-3 py-1.5 rounded-full transition-all min-w-[80px] text-center";
+
+  if (state === "adding") {
+    return (
+      <button disabled className={`${base} bg-indigo-700 text-indigo-200 cursor-default`}>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-3 h-3 border-2 border-indigo-300 border-t-transparent rounded-full animate-spin" />
+          Adding…
+        </span>
+      </button>
+    );
+  }
+  if (state === "added") {
+    return (
+      <button disabled className={`${base} bg-green-700 text-white cursor-default`}>
+        Added ✓
+      </button>
+    );
+  }
+  if (state === "duplicate") {
+    return (
+      <button disabled className={`${base} bg-gray-600 text-gray-400 cursor-default`}>
+        Already added
+      </button>
+    );
+  }
+  if (state === "error") {
+    return (
+      <button onClick={onClick} className={`${base} bg-red-700 hover:bg-red-600 text-white`}>
+        Retry
+      </button>
+    );
+  }
+  // idle
+  return (
+    <button onClick={onClick} className={`${base} bg-indigo-600 hover:bg-indigo-500 text-white`}>
+      Add
+    </button>
   );
 }

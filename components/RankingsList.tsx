@@ -5,24 +5,19 @@ import type { MediaItem } from "@/db";
 import MediaCard from "./MediaCard";
 
 interface RankingsListProps {
-  initialItems: MediaItem[];
+  items: MediaItem[];
   type: "movie" | "tv";
+  onRefresh: () => Promise<void>;
 }
 
-export default function RankingsList({ initialItems, type }: RankingsListProps) {
-  const [items, setItems] = useState<MediaItem[]>(initialItems);
+export default function RankingsList({ items, type, onRefresh }: RankingsListProps) {
   const [removing, setRemoving] = useState<number | null>(null);
-
-  const refresh = async () => {
-    const res = await fetch(`/api/rankings?type=${type}`);
-    if (res.ok) setItems(await res.json());
-  };
 
   const handleRemove = async (id: number) => {
     if (!confirm("Remove from your collection?")) return;
     setRemoving(id);
     await fetch(`/api/media/${id}`, { method: "DELETE" });
-    await refresh();
+    await onRefresh();
     setRemoving(null);
   };
 
